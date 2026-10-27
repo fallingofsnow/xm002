@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>4x4 射线格子游戏</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    color: #fff;
+  }
+  h1 { font-size: 22px; margin-bottom: 6px; letter-spacing: 1px; }
+  .subtitle { font-size: 13px; color: #8a9bb5; margin-bottom: 24px; text-align: center; max-width: 500px; line-height: 1.6; }
+
+  .board-wrapper {
+    position: relative;
+    padding: 70px 30px 30px 70px;
+  }
+
+  .board {
+    position: relative;
+    width: 360px;
+    height: 360px;
+  }
+
+  /* 射线条 */
+  .ray {
+    position: absolute;
+    border-radius: 4px;
+    opacity: 0;
+    transition: opacity 0.2s;
+    pointer-events: none;
+    z-index: 0;
+  }
+  .ray.on { opacity: 1; }
+  /* 列射线（从上方射入）—— 竖向条 */
+  .ray.col-ray {
+    width: 36px;
+    height: 120px;
+    top: -120px;
+  }
+  /* 行射线（从右方射入）—— 横向条 */
+  .ray.row-ray {
+    height: 36px;
+    width: 120px;
+    right: -120px;
+  }
+
+  /* 射线发射源（小圆点） */
+  .ray-source {
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #3a4a6a;
+    border: 2px solid #5a6a90;
+    cursor: pointer;
+    z-index: 5;
+    transition: all 0.2s;
+  }
+  .ray-source:hover { transform: scale(1.3); border-color: #e74c3c; }
+  .ray-source.on { background: #e74c3c; border-color: #ff6b6b; box-shadow: 0 0 10px rgba(231,76,60,0.8); }
+
+  .grid {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    grid-template-rows: repeat(4, 1fr);
+    gap: 6px;
+    z-index: 2;
+  }
+
+  .cell {
+    background: #2a3447;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.15s, box-shadow 0.15s, transform 0.1s;
+    border: 2px solid #3a4660;
+  }
+  .cell:hover { border-color: #5a6a90; }
+  .cell:active { transform: scale(0.96); }
+  .cell.active { background: #2ecc71; border-color: #27ae60; box-shadow: 0 0 12px rgba(46,204,113,0.6); }
+  .cell.red { background: #e74c3c !important; border-color: #c0392b !important; box-shadow: 0 0 12px rgba(231,76,60,0.6) !important; }
+
+  .controls { margin-top: 20px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: center; }
+  button {
+    background: #3a4a6a;
+    color: #fff;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: background 0.2s;
+  }
+  button:hover { background: #4a5a7a; }
+  .status { font-size: 14px; color: #8a9bb5; margin-top: 14px; text-align: center; }
+  .status .on { color: #2ecc71; font-weight: bold; }
+</style>
+</head<body>
+  <h1>4×4 射线格子</h1>
+  <div class="subtitle">
+    点击格子切换绿色 · 点击上方/右方小圆点开关对应整列/整行变红<br>
+    上边两条列射线互不相邻，右边两条行射线互不相邻
+  </div>
+
+  <div class="board-wrapper">
+    <div class="board" id="board">
+      <div class="grid" id="grid"></div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button id="randomize">🎲 随机射线</button>
+    <button id="reset">↺ 重置格子</button>
+  </div>
+  <div class="status" id="status"></div>
+
+<script>
+  const ROWS = 4, COLS = 4;
+  const CELL = 360 / 4; // 90px
+  const boardEl = document.getElementById('board');
+  const gridEl = document.getElementById('grid');
+  const statusEl = document.getElementById('status');
+
+  // 4 个位置(0,1,2,3) 中选 2 个不相邻的：{0,2}, {0,3}, {1,3}
+  const NON_ADJ_PAIRS = [[0,2],[0,3],[1,3]];
+
+  // 格子状态
+  const cells = [];
+  for (let r = 0; r < ROWS; r++) {
+    cells[r] = [];
+    for (let c = 0; c < COLS; c++) {
+      const el = document.createElement('div');
+      el.className = 'cell';
+      el.dataset.r = r;
+      el.dataset.c = c;
+      el.addEventListener('click', () => toggleCell(r, c));
+      gridEl.appendChild(el);
+      cells[r][c] = { el, active: false };
+    }
+  }
+
+  let rays = []; // {dir:'col'|'row', pos, on, el, src}
+
+  function clearRays() {
+    document.querySelectorAll('.ray').forEach(e => e.remove());
+    document.querySelectorAll('.ray-source').forEach(e => e.remove());
+  }
+
+  function createRays() {
+    clearRays();
+    rays = [];
+
+    // 上边：2 条列射线，位置不相邻
+    const colPair = NON_ADJ_PAIRS[Math.floor(Math.random() * NON_ADJ_PAIRS.length)];
+    colPair.forEach(pos => rays.push({ dir: 'col', pos, on: false }));
+
+    // 右边：2 条行射线，位置不相邻
+    const rowPair = NON_ADJ_PAIRS[Math.floor(Math.random() * NON_ADJ_PAIRS.length)];
+    rowPair.forEach(pos => rays.push({ dir: 'row', pos, on: false }));
+
+    rays.forEach(ray => createRayElement(ray));
+  }
+
+  function createRayElement(ray) {
+    // 射线条
+    const rayEl = document.createElement('div');
+    rayEl.className = 'ray ' + (ray.dir === 'col' ? 'col-ray' : 'row-ray');
+
+    if (ray.dir === 'col') {
+      // 从上边射入，命中第 pos 列
+      const left = ray.pos * CELL + CELL / 2 - 18;
+      rayEl.style.left = left + 'px';
+    } else {
+      // 从右边射入，命中第 pos 行
+      const top = ray.pos * CELL + CELL / 2 - 18;
+      rayEl.style.top = top + 'px';
+    }
+    boardEl.appendChild(rayEl);
+    ray.el = rayEl;
+
+    // 射线源（小圆点）
+    const src = document.createElement('div');
+    src.className = 'ray-source';
+    if (ray.dir === 'col') {
+      // 上方：在第 pos 列的位置
+      const left = ray.pos * CELL + CELL / 2 - 7;
+      src.style.left = left + 'px';
+      src.style.top = '-35px';
+    } else {
+      // 右方：在第 pos 行的位置
+      const top = ray.pos * CELL + CELL / 2 - 7;
+      src.style.top = top + 'px';
+      src.style.right = '-35px';
+    }
+    src.addEventListener('click', () => toggleRay(ray));
+    boardEl.appendChild(src);
+    ray.src = src;
+  }
+
+  function toggleCell(r, c) {
+    const cell = cells[r][c];
+    cell.active = !cell.active;
+    cell.el.classList.toggle('active', cell.active);
+    updateRays();
+  }
+
+  function toggleRay(ray) {
+    ray.on = !ray.on;
+    ray.el.classList.toggle('on', ray.on);
+    ray.src.classList.toggle('on', ray.on);
+    updateRays();
+  }
+
+  function updateRays() {
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        const cell = cells[r][c];
+        const hit = rays.some(ray => ray.on && isRayHit(ray, r, c));
+        if (!cell.active && hit) {
+          cell.el.classList.add('red');
+        } else {
+          cell.el.classList.remove('red');
+        }
+      }
+    }
+    const green = countGreen();
+    const red = countRed();
+    const onRays = rays.filter(ray => ray.on).length;
+    statusEl.innerHTML =
+      `绿色格子：<span class="on">${green}</span> 个 · 红色覆盖：<span style="color:#e74c3c;font-weight:bold">${red}</span> 个 · 射线开启：${onRays}/4`;
+  }
+
+  function isRayHit(ray, r, c) {
+    if (ray.dir === 'row') {
+      return ray.pos === r;
+    } else {
+      return ray.pos === c;
+    }
+  }
+
+  function countGreen() {
+    let n = 0;
+    for (let r=0;r<ROWS;r++) for (let c=0;c<COLS;c++) if (cells[r][c].active) n++;
+    return n;
+  }
+  function countRed() {
+    let n = 0;
+    for (let r=0;r<ROWS;r++) for (let c=0;c<COLS;c++) {
+      if (cells[r][c].active) continue;
+      if (rays.some(ray => ray.on && isRayHit(ray, r, c))) n++;
+    }
+    return n;
+  }
+
+  function resetCells() {
+    for (let r=0;r<ROWS;r++) for (let c=0;c<COLS;c++) {
+      cells[r][c].active = false;
+      cells[r][c].el.classList.remove('active','red');
+    }
+    updateRays();
+  }
+
+  document.getElementById('randomize').addEventListener('click', () => {
+    createRays();
+    // 随机完后直接全部打开，红色格子全部显示
+    rays.forEach(ray => {
+      ray.on = true;
+      ray.el.classList.add('on');
+      ray.src.classList.add('on');
+    });
+    updateRays();
+  });
+  document.getElementById('reset').addEventListener('click', () => {
+    resetCells();
+    // 重置时同时关闭所有射线
+    rays.forEach(ray => {
+      ray.on = false;
+      ray.el.classList.remove('on');
+      ray.src.classList.remove('on');
+    });
+    updateRays();
+  });
+
+  createRays();
+  // 初始也直接全部打开
+  rays.forEach(ray => {
+    ray.on = true;
+    ray.el.classList.add('on');
+    ray.src.classList.add('on');
+  });
+  updateRays();
+</script>
+</body>
+</html>
